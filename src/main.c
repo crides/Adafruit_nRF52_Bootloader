@@ -68,6 +68,7 @@
 #include "pstorage.h"
 #include "nrfx_nvmc.h"
 
+#include "nrfx_qspi.h"
 
 #ifdef NRF_USBD
 #include "nrf_usbd.h"
@@ -152,6 +153,75 @@ void softdev_mbr_init(void)
   sd_mbr_command(&com);
 }
 
+volatile bool qspi_busy = false;
+static void qspi_busy_handler(nrfx_qspi_evt_t _event, void *_p_context) {
+    PRINTF("busy handler\n");
+    qspi_busy = false;
+}
+
+static void qspi_flash_init(void) {
+    nrfx_qspi_config_t config = {
+        .xip_offset = 0,
+        .pins = {
+            .sck_pin = BLEBAT_SPI_SCLK,
+            .csn_pin = BLEBAT_SPI_FLASH_CS,
+            .io0_pin = BLEBAT_SPI_MOSI,
+            .io1_pin = BLEBAT_SPI_MISO,
+            .io2_pin = NRF_QSPI_PIN_NOT_CONNECTED,
+            .io3_pin = NRF_QSPI_PIN_NOT_CONNECTED,
+        },
+        .prot_if = {
+            .readoc = NRF_QSPI_READOC_FASTREAD,
+            .writeoc = NRF_QSPI_WRITEOC_PP,
+            .addrmode = NRF_QSPI_ADDRMODE_24BIT,
+            .dpmconfig = false,
+        },
+        .phy_if = {
+            .sck_delay = 2,
+            .dpmen = false,
+            .spi_mode = NRF_QSPI_MODE_0,
+            .sck_freq = NRF_QSPI_FREQ_32MDIV4,
+        },
+        .irq_priority = 6,
+    };
+
+    uint32_t ret;
+    ret = nrfx_qspi_init(&config, qspi_busy_handler, NULL);
+    if (ret != 0) {
+        PRINTF("qspi init: %08lx\n", ret);
+    }
+    // Reset
+    nrf_qspi_cinstr_conf_t cinst = {
+        .opcode    = 0x66,
+        .length    = NRF_QSPI_CINSTR_LEN_1B,
+        .io2_level = false,
+        .io3_level = false,
+        .wipwait   = false,
+        .wren      = false,
+    };
+
+    // Send reset enable
+    ret = nrfx_qspi_cinstr_xfer(&cinst, NULL, NULL);
+    if (ret != 0) {
+        PRINTF("qspi reset en: %08lx\n", ret);
+    }
+    cinst.opcode = 0x99;
+    ret = nrfx_qspi_cinstr_xfer(&cinst, NULL, NULL);
+    if (ret != 0) {
+        PRINTF("qspi reset: %08lx\n", ret);
+    }
+}
+
+static void qspi_flash_teardown(void) {
+    PRINTF("qspi uninit");
+    nrfx_qspi_uninit();
+}
+
+uint32_t bootloader_dfu_start_wrap(bool ota, uint32_t timeout_ms, bool cancel_timeout_on_usb) {
+  qspi_flash_init();
+  return bootloader_dfu_start(ota, timeout_ms, cancel_timeout_on_usb);
+}
+
 //--------------------------------------------------------------------+
 //
 //--------------------------------------------------------------------+
@@ -213,6 +283,7 @@ int main(void)
     _ota_dfu = _ota_dfu  || ( button_pressed(BUTTON_DFU) && button_pressed(BUTTON_FRESET) ) ;
 
     bool const valid_app = bootloader_app_is_valid();
+    PRINTF("App validity: %u\n", valid_app);
     bool const just_start_app = valid_app && !dfu_start && (*dbl_reset_mem) == DFU_DBL_RESET_APP;
 
     if (!just_start_app && APP_ASKS_FOR_SINGLE_TAP_RESET()) dfu_start = 1;
@@ -230,7 +301,7 @@ int main(void)
        * Note: Supposedly during this time if RST is press, it will count as double reset.
        * However Double Reset WONT work with nrf52832 since its SRAM got cleared anyway.
        */
-      bootloader_dfu_start(false, DFU_SERIAL_STARTUP_INTERVAL, false);
+      bootloader_dfu_start_wrap(false, DFU_SERIAL_STARTUP_INTERVAL, false);
 #else
       // if RST is pressed during this delay --> if will enter dfu
       NRFX_DELAY_MS(DFU_DBL_RESET_DELAY);
@@ -264,14 +335,15 @@ int main(void)
       if (APP_ASKS_FOR_SINGLE_TAP_RESET() || uf2_dfu || serial_only_dfu)
       {
         // If USB is not enumerated in 3s (eg. because we're running on battery), we restart into app.
-        APP_ERROR_CHECK( bootloader_dfu_start(_ota_dfu, 3000, true) );
+        APP_ERROR_CHECK( bootloader_dfu_start_wrap(_ota_dfu, 3000, true) );
       }
       else
       {
         // No timeout if bootloader requires user action (double-reset).
-        APP_ERROR_CHECK( bootloader_dfu_start(_ota_dfu, 0, false) );
+        APP_ERROR_CHECK( bootloader_dfu_start_wrap(_ota_dfu, 0, false) );
       }
 
+      qspi_flash_teardown();
       if ( _ota_dfu )
       {
         sd_softdevice_disable();

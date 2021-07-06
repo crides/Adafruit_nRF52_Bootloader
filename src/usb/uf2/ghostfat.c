@@ -29,6 +29,7 @@
 #include "uf2.h"
 #include "configkeys.h"
 #include "flash_nrf5x.h"
+#include "nrfx_qspi.h"
 #include <string.h>
 #include <stdio.h>
 
@@ -384,6 +385,7 @@ void read_block(uint32_t block_no, uint8_t *data) {
  */
 int write_block (uint32_t block_no, uint8_t *data, WriteState *state)
 {
+  extern volatile bool qspi_busy;
   UF2_Block *bl = (void*) data;
 
   if ( !is_uf2_block(bl) ) return -1;
@@ -425,6 +427,27 @@ int write_block (uint32_t block_no, uint8_t *data, WriteState *state)
         return -1;
       }
     break;
+
+    case EMBEDDED_STENO_FAMILY_ID:
+        PRINTF("steno %lu @ %06lX\n", bl->payloadSize, bl->targetAddr);
+        /* if ((bl->targetAddr & (64 << 10 - 1)) == 0) */
+        // 64KiB block start
+        uint32_t ret;
+        if ((bl->targetAddr % (64 << 10)) == 0) {
+            while (qspi_busy);
+            qspi_busy = true;
+            ret = nrfx_qspi_erase(NRF_QSPI_ERASE_LEN_64KB, bl->targetAddr);
+            if (ret != 0) {
+                PRINTF("qspi erase: %08lx\n", ret);
+            }
+        }
+        while (qspi_busy);
+        qspi_busy = true;
+        ret = nrfx_qspi_write(bl->data, bl->payloadSize, bl->targetAddr);
+        if (ret != 0) {
+            PRINTF("qspi write: %08lx\n", ret);
+        }
+        break;
 
     case CFG_UF2_FAMILY_BOOT_ID:
       /* Upgrading Bootloader

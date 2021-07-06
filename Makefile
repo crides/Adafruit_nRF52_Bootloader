@@ -132,6 +132,9 @@ C_SRC += $(wildcard src/boards/$(BOARD)/*.c)
 # nrfx
 C_SRC += $(NRFX_PATH)/drivers/src/nrfx_power.c
 C_SRC += $(NRFX_PATH)/drivers/src/nrfx_nvmc.c
+ifeq (blebat,$(BOARD))
+	C_SRC += $(NRFX_PATH)/drivers/src/nrfx_qspi.c
+endif
 C_SRC += $(NRFX_PATH)/mdk/system_$(MCU_SUB_VARIANT).c
 
 # SDK 11 files: serial + OTA DFU
@@ -268,10 +271,11 @@ CFLAGS += \
 	-Wmissing-format-attribute \
 	-Wno-endif-labels \
 	-Wunreachable-code \
-	-ggdb
+	-ggdb \
+	-flto
 
 # Suppress warning caused by SDK
-CFLAGS += -Wno-unused-parameter -Wno-expansion-to-defined
+CFLAGS += -Wno-unused-parameter -Wno-expansion-to-defined -Wno-maybe-uninitialized
 
 # TinyUSB tusb_hal_nrf_power_event
 CFLAGS += -Wno-cast-function-type
@@ -294,6 +298,9 @@ CFLAGS += -DBLEDIS_FW_VERSION='"$(GIT_VERSION) $(SD_NAME) $(SD_VERSION)"'
 _VER = $(subst ., ,$(word 1, $(subst -, ,$(GIT_VERSION))))
 CFLAGS += -DMK_BOOTLOADER_VERSION='($(word 1,$(_VER)) << 16) + ($(word 2,$(_VER)) << 8) + $(word 3,$(_VER))'
 
+ifeq (blebat,$(BOARD))
+	CFLAGS += -DNRFX_QSPI_ENABLED=1
+endif
 #------------------------------------------------------------------------------
 # Linker Flags
 #------------------------------------------------------------------------------
